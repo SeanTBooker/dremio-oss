@@ -27,8 +27,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-import javax.annotation.Nullable;
-
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelOptCost;
 import org.apache.calcite.plan.RelOptPlanner;
@@ -47,7 +45,6 @@ import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.metadata.ChainedRelMetadataProvider;
 import org.apache.calcite.rel.metadata.RelMetadataProvider;
 import org.apache.calcite.rel.type.RelDataType;
-import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexUtil;
@@ -77,6 +74,7 @@ import com.dremio.exec.physical.base.AbstractPhysicalVisitor;
 import com.dremio.exec.physical.base.PhysicalOperator;
 import com.dremio.exec.planner.DremioHepPlanner;
 import com.dremio.exec.planner.DremioVolcanoPlanner;
+import com.dremio.exec.planner.MatchCountListener;
 import com.dremio.exec.planner.PlannerPhase;
 import com.dremio.exec.planner.PlannerType;
 import com.dremio.exec.planner.StatelessRelShuttleImpl;
@@ -138,8 +136,9 @@ import com.dremio.sabot.op.join.JoinUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
-import com.google.common.base.Predicate;
 import com.google.common.base.Stopwatch;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
@@ -230,63 +229,22 @@ public class PrelTransformer {
    * @param relNode
    * @return
    * @throws SqlUnsupportedException
-   * @throws RelConversionException
    */
-  public static Rel convertToDrel(SqlHandlerConfig config, final RelNode relNode) throws SqlUnsupportedException, RelConversionException {
+  public static Rel convertToDrel(SqlHandlerConfig config, final RelNode relNode) throws SqlUnsupportedException {
 
     try {
-      final RelNode trimmed = trimFields(relNode, true, config.getContext().getPlannerSettings().isRelPlanningEnabled());
-      final RelNode preLog = transform(config, PlannerType.HEP_BOTTOM_UP, PlannerPhase.PRE_LOGICAL, trimmed, trimmed.getTraitSet(), true);
-
-      final RelTraitSet logicalTraits = preLog.getTraitSet().plus(Rel.LOGICAL);
-      final RelNode adjusted = transform(config, PlannerType.VOLCANO, PlannerPhase.LOGICAL, preLog, logicalTraits, true);
-
-      final RelNode intermediateNode;
-      if (config.getContext().getPlannerSettings().removeRowCountAdjustment()) {
-        intermediateNode = adjusted.accept(new RelShuttleImpl() {
-            @Override
-            public RelNode visit(TableScan scan) {
-              if (scan instanceof FilesystemScanDrel) {
-                FilesystemScanDrel scanDrel = (FilesystemScanDrel) scan;
-                return scanDrel.removeRowCountAdjustment();
-              }
-              return super.visit(scan);
-            }
-          });
-      } else {
-        intermediateNode = adjusted;
-      }
-
-      RelNode postLogical;
-      if (config.getContext().getPlannerSettings().isRelPlanningEnabled()) {
-        RelNode relWithoutMultipleConstantGroupKey;
-        try {
-          // Try removing multiple constants group keys from aggregates. Any unexpected failures in this process shouldn't fail the whole query.
-          relWithoutMultipleConstantGroupKey = MoreRelOptUtil.removeConstantGroupKeys(intermediateNode, DremioRelFactories.LOGICAL_BUILDER);
-        } catch (Exception ex) {
-          logger.error("Failure while removing multiple constant group by keys in aggregate, ", ex);
-          relWithoutMultipleConstantGroupKey = intermediateNode;
-        }
-        final RelNode decorrelatedNode = DremioRelDecorrelator.decorrelateQuery(relWithoutMultipleConstantGroupKey, DremioRelFactories.LOGICAL_BUILDER.create(relWithoutMultipleConstantGroupKey.getCluster(), null), true);
-        final RelNode jdbcPushDown = transform(config, PlannerType.HEP_AC, PlannerPhase.RELATIONAL_PLANNING, decorrelatedNode, decorrelatedNode.getTraitSet().plus(Rel.LOGICAL), true);
-        postLogical = jdbcPushDown.accept(new ShortenJdbcColumnAliases()).accept(new ConvertJdbcLogicalToJdbcRel(DremioRelFactories.LOGICAL_BUILDER));
-      } else {
-        postLogical = intermediateNode;
-      }
-
+      final PlannerSettings plannerSettings = config.getContext().getPlannerSettings();
+      final RelNode trimmed = trimFields(relNode, true, plannerSettings.isRelPlanningEnabled());
+      final RelNode projPush = transform(config, PlannerType.HEP_AC, PlannerPhase.PROJECT_PUSHDOWN, trimmed, trimmed.getTraitSet(), true);
+      final RelNode preLog = transform(config, PlannerType.HEP_AC, PlannerPhase.PRE_LOGICAL, projPush, projPush.getTraitSet(), true);
+      final RelNode preLogTransitive = getPreLogicalTransitive(config, preLog, plannerSettings);
+      final RelNode logical = transform(config, PlannerType.VOLCANO, PlannerPhase.LOGICAL, preLogTransitive, preLogTransitive.getTraitSet().plus(Rel.LOGICAL), true);
+      final RelNode rowCountAdjusted = getRowCountAdjusted(logical, plannerSettings);
+      final RelNode postLogical = getPostLogical(config, rowCountAdjusted, plannerSettings);
       // Do Join Planning.
       final RelNode preConvertedRelNode = transform(config, PlannerType.HEP_BOTTOM_UP, PlannerPhase.JOIN_PLANNING_MULTI_JOIN, postLogical, postLogical.getTraitSet(), true);
       final RelNode convertedRelNode = transform(config, PlannerType.HEP_BOTTOM_UP, PlannerPhase.JOIN_PLANNING_OPTIMIZATION, preConvertedRelNode, preConvertedRelNode.getTraitSet(), true);
-
-      FlattenRelFinder flattenFinder = new FlattenRelFinder();
-      final RelNode flattendPushed;
-      if (flattenFinder.run(convertedRelNode)) {
-        flattendPushed = transform(config, PlannerType.VOLCANO, PlannerPhase.FLATTEN_PUSHDOWN,
-          convertedRelNode, convertedRelNode.getTraitSet(), true);
-      } else {
-        flattendPushed = convertedRelNode;
-      }
-
+      final RelNode flattendPushed = getFlattenedPushed(config, convertedRelNode);
       final Rel drel = (Rel) flattendPushed;
 
       if (drel instanceof TableModify) {
@@ -309,6 +267,65 @@ public class PrelTransformer {
     }
   }
 
+  private static RelNode getPreLogicalTransitive(SqlHandlerConfig config, RelNode preLog, PlannerSettings plannerSettings) {
+    if (plannerSettings.isTransitiveFilterPushdownEnabled()) {
+      Stopwatch watch = Stopwatch.createStarted();
+      final RelNode joinPullFilters = preLog.accept(new JoinPullTransitiveFiltersVisitor());
+      log(PlannerType.HEP, PlannerPhase.TRANSITIVE_PREDICATE_PULLUP, joinPullFilters, logger, watch);
+      config.getObserver().planRelTransform(PlannerPhase.TRANSITIVE_PREDICATE_PULLUP, null, preLog, joinPullFilters, watch.elapsed(TimeUnit.MILLISECONDS));
+      return transform(config, PlannerType.HEP_AC, PlannerPhase.PRE_LOGICAL_TRANSITIVE, joinPullFilters, joinPullFilters.getTraitSet(), true);
+    } else {
+      return preLog;
+    }
+  }
+
+  private static RelNode getRowCountAdjusted(RelNode logical, PlannerSettings plannerSettings) {
+    if (plannerSettings.removeRowCountAdjustment()) {
+      return logical.accept(new RelShuttleImpl() {
+        @Override
+        public RelNode visit(TableScan scan) {
+          if (scan instanceof FilesystemScanDrel) {
+            FilesystemScanDrel scanDrel = (FilesystemScanDrel) scan;
+            return scanDrel.removeRowCountAdjustment();
+          }
+          return super.visit(scan);
+        }
+      });
+    } else {
+      return logical;
+    }
+  }
+
+  private static RelNode getPostLogical(SqlHandlerConfig config, RelNode rowCountAdjusted, PlannerSettings plannerSettings) {
+    if (plannerSettings.isRelPlanningEnabled()) {
+      RelNode relWithoutMultipleConstantGroupKey;
+      try {
+        // Try removing multiple constants group keys from aggregates. Any unexpected failures in this process shouldn't fail the whole query.
+        relWithoutMultipleConstantGroupKey = MoreRelOptUtil.removeConstantGroupKeys(rowCountAdjusted, DremioRelFactories.LOGICAL_BUILDER);
+      } catch (Exception ex) {
+        logger.error("Failure while removing multiple constant group by keys in aggregate, ", ex);
+        relWithoutMultipleConstantGroupKey = rowCountAdjusted;
+      }
+      final RelNode decorrelatedNode = DremioRelDecorrelator.decorrelateQuery(relWithoutMultipleConstantGroupKey, DremioRelFactories.LOGICAL_BUILDER.create(relWithoutMultipleConstantGroupKey.getCluster(), null), true);
+      final RelNode jdbcPushDown = transform(config, PlannerType.HEP_AC, PlannerPhase.RELATIONAL_PLANNING, decorrelatedNode, decorrelatedNode.getTraitSet().plus(Rel.LOGICAL), true);
+      return jdbcPushDown.accept(new ShortenJdbcColumnAliases()).accept(new ConvertJdbcLogicalToJdbcRel(DremioRelFactories.LOGICAL_BUILDER));
+    } else {
+      return rowCountAdjusted;
+    }
+  }
+
+  private static RelNode getFlattenedPushed(SqlHandlerConfig config, RelNode convertedRelNode) {
+    FlattenRelFinder flattenFinder = new FlattenRelFinder();
+    if (flattenFinder.run(convertedRelNode)) {
+      final RelNode wrapped = RexFieldAccessUtils.wrap(convertedRelNode);
+      RelNode transformed = transform(config, PlannerType.VOLCANO, PlannerPhase.FLATTEN_PUSHDOWN,
+        wrapped, convertedRelNode.getTraitSet(), true);
+      return RexFieldAccessUtils.unwrap(transformed);
+    } else {
+      return convertedRelNode;
+    }
+  }
+
   /***
    * Converts to drel then adds a project to maintain the result names if necessary.
    *
@@ -323,7 +340,7 @@ public class PrelTransformer {
     RelNode relNode
   ) throws SqlUnsupportedException, RelConversionException {
     Rel drel = convertToDrel(config, relNode);
-    return addRenamedProject(config, drel, relNode.getRowType());
+    return addRenamedProjectForMaterialization(config, drel, relNode.getRowType());
   }
 
   /**
@@ -432,16 +449,24 @@ public class PrelTransformer {
     final RelTraitSet toTraits = targetTraits.simplify();
     final RelOptPlanner planner;
     final Supplier<RelNode> toPlan;
+    final PlannerSettings plannerSettings = config.getContext().getPlannerSettings();
 
     CALCITE_LOGGER.trace("Starting Planning for phase {} with target traits {}.", phase, targetTraits);
     if (Iterables.isEmpty(rules)) {
-      CALCITE_LOGGER.trace("Completed Phase: {}. No rules.");
+      CALCITE_LOGGER.trace("Completed Phase: {}. No rules.", phase);
       return input;
     }
 
     if(plannerType.isHep()) {
 
       final HepProgramBuilder hepPgmBldr = new HepProgramBuilder();
+
+      long relNodeCount = MoreRelOptUtil.countRelNodes(input);
+      long rulesCount = Iterables.size(rules);
+      int matchLimit = (int) plannerSettings.getOptions().getOption(PlannerSettings.HEP_PLANNER_MATCH_LIMIT);
+      hepPgmBldr.addMatchLimit(matchLimit);
+
+      MatchCountListener matchCountListener = new MatchCountListener(relNodeCount, rulesCount, matchLimit);
 
       hepPgmBldr.addMatchOrder(plannerType.getMatchOrder());
       if(plannerType.isCombineRules()) {
@@ -453,13 +478,13 @@ public class PrelTransformer {
       }
 
       SqlConverter converter = config.getConverter();
-      final HepPlanner hepPlanner = new DremioHepPlanner(hepPgmBldr.build(), config.getContext().getPlannerSettings(), converter.getCostFactory(), phase);
+      final DremioHepPlanner hepPlanner = new DremioHepPlanner(hepPgmBldr.build(), plannerSettings, converter.getCostFactory(), phase, matchCountListener);
       hepPlanner.setExecutor(new ConstExecutor(converter.getFunctionImplementationRegistry(), converter.getFunctionContext(), converter.getSettings()));
 
       final List<RelMetadataProvider> list = Lists.newArrayList();
       list.add(DefaultRelMetadataProvider.INSTANCE);
       hepPlanner.registerMetadataProviders(list);
-      final RelMetadataProvider cachingMetaDataProvider = new CachingRelMetadataProvider(
+      final RelMetadataProvider cachingMetaDataProvider = buildCachingRelMetadataProvider(
           ChainedRelMetadataProvider.of(list), hepPlanner);
 
       // Modify RelMetaProvider for every RelNode in the SQL operator Rel tree.
@@ -474,8 +499,17 @@ public class PrelTransformer {
       }
 
       planner = hepPlanner;
-      toPlan = () -> hepPlanner.findBestExp();
-
+      toPlan = () -> {
+        RelNode relNode = hepPlanner.findBestExp();
+        if (log) {
+          logger.debug("Phase: {}", phase);
+          logger.debug("RelNodes count: {}", matchCountListener.getRelNodeCount());
+          logger.debug("Rules count: {}", matchCountListener.getRulesCount());
+          logger.debug("Match limit: {}", matchCountListener.getMatchLimit());
+          logger.debug("Match count: {}", matchCountListener.getMatchCount());
+        }
+        return relNode;
+      };
     } else {
       // as weird as it seems, the cluster's only planner is the volcano planner.
       Preconditions.checkArgument(input.getCluster().getPlanner() instanceof DremioVolcanoPlanner,
@@ -490,7 +524,7 @@ public class PrelTransformer {
       list.add(DefaultRelMetadataProvider.INSTANCE);
       volcanoPlanner.registerMetadataProviders(list);
 
-      final RelMetadataProvider cachingMetaDataProvider = new CachingRelMetadataProvider(
+      final RelMetadataProvider cachingMetaDataProvider = buildCachingRelMetadataProvider(
           ChainedRelMetadataProvider.of(list), volcanoPlanner);
 
       // Modify RelMetaProvider for every RelNode in the SQL operator Rel tree.
@@ -525,10 +559,21 @@ public class PrelTransformer {
 
       final HepProgram p = builder.build();
 
-      final HepPlanner pl = new HepPlanner(p);
+      final HepPlanner pl = new HepPlanner(p, config.getContext().getPlannerSettings());
       pl.setRoot(relNode);
       return pl.findBestExp().accept(new ConvertJdbcLogicalToJdbcRel(DremioRelFactories.CALCITE_LOGICAL_BUILDER));
     };
+  }
+
+  private static RelMetadataProvider buildCachingRelMetadataProvider(
+    RelMetadataProvider relMetadataProvider,
+    RelOptPlanner hepPlanner
+  ) {
+    Cache<List<Object>, CachingRelMetadataProvider.CacheEntry> cache =
+      CacheBuilder.newBuilder()
+        .softValues()
+        .build();
+    return new CachingRelMetadataProvider(relMetadataProvider, hepPlanner, cache.asMap());
   }
 
   private static RelNode doTransform(SqlHandlerConfig config, final PlannerType plannerType, final PlannerPhase phase, final RelOptPlanner planner, final RelNode input, boolean log, Supplier<RelNode> toPlan) {
@@ -1026,7 +1071,35 @@ public class PrelTransformer {
     return rel;
   }
 
-  public static Rel addRenamedProject(SqlHandlerConfig config, Rel rel, RelDataType validatedRowType) {
+  private static Rel addRenamedProject(SqlHandlerConfig config, Rel rel, RelDataType validatedRowType) {
+    ProjectRel topProj = createRenameProjectRel(rel, validatedRowType);
+
+    final boolean noneHaveAnyType = validatedRowType.getFieldList().stream()
+      .noneMatch(input -> input.getType().getSqlTypeName() == SqlTypeName.ANY);
+
+    // Add a final non-trivial Project to get the validatedRowType, if child is not project or the input row type
+    // contains at least one field of type ANY
+    if (rel instanceof Project && MoreRelOptUtil.isTrivialProject(topProj) && noneHaveAnyType) {
+      return rel;
+    }
+
+    return topProj;
+  }
+
+  private static Rel addRenamedProjectForMaterialization(SqlHandlerConfig config, Rel rel, RelDataType validatedRowType) {
+    RelDataType relRowType = rel.getRowType();
+
+    ProjectRel topProj = createRenameProjectRel(rel, validatedRowType);
+
+    // Add a final non-trivial Project to get the validatedRowType
+    if (MoreRelOptUtil.isTrivialProjectIgnoreNameCasing(topProj)) {
+      return rel;
+    }
+
+    return topProj;
+  }
+
+  private static ProjectRel createRenameProjectRel(Rel rel, RelDataType validatedRowType) {
     RelDataType t = rel.getRowType();
 
     RexBuilder b = rel.getCluster().getRexBuilder();
@@ -1045,26 +1118,6 @@ public class PrelTransformer {
     RelDataType newRowType = RexUtil.createStructType(rel.getCluster().getTypeFactory(), projections, fieldNames2);
 
     ProjectRel topProj = ProjectRel.create(rel.getCluster(), rel.getTraitSet(), rel, projections, newRowType);
-
-    final boolean hasAnyType = Iterables.find(
-        validatedRowType.getFieldList(),
-        new Predicate<RelDataTypeField>() {
-          @Override
-          public boolean apply(@Nullable RelDataTypeField input) {
-            return input.getType().getSqlTypeName() == SqlTypeName.ANY;
-          }
-        },
-        null
-    ) != null;
-
-    // Add a final non-trivial Project to get the validatedRowType, if child is not project or the input row type
-    // contains at least one field of type ANY
-    if (rel instanceof Project && MoreRelOptUtil.isTrivialProject(topProj, true) && !hasAnyType) {
-      return rel;
-    }
-
     return topProj;
   }
-
-
 }

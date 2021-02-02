@@ -77,7 +77,9 @@ import com.dremio.exec.planner.logical.CompositeFilterJoinRule;
 import com.dremio.exec.planner.logical.Conditions;
 import com.dremio.exec.planner.logical.CorrelateRule;
 import com.dremio.exec.planner.logical.DremioAggregateReduceFunctionsRule;
+import com.dremio.exec.planner.logical.DremioProjectJoinTransposeRule;
 import com.dremio.exec.planner.logical.DremioRelFactories;
+import com.dremio.exec.planner.logical.DremioSortMergeRule;
 import com.dremio.exec.planner.logical.EmptyRule;
 import com.dremio.exec.planner.logical.ExpansionDrule;
 import com.dremio.exec.planner.logical.FilterFlattenTransposeRule;
@@ -85,6 +87,7 @@ import com.dremio.exec.planner.logical.FilterJoinRulesUtil;
 import com.dremio.exec.planner.logical.FilterMergeCrule;
 import com.dremio.exec.planner.logical.FilterRel;
 import com.dremio.exec.planner.logical.FilterRule;
+import com.dremio.exec.planner.logical.FilterWindowTransposeRule;
 import com.dremio.exec.planner.logical.FlattenRule;
 import com.dremio.exec.planner.logical.JoinFilterCanonicalizationRule;
 import com.dremio.exec.planner.logical.JoinNormalizationRule;
@@ -122,7 +125,6 @@ import com.dremio.exec.planner.physical.NestedLoopJoinPrule;
 import com.dremio.exec.planner.physical.PlannerSettings;
 import com.dremio.exec.planner.physical.ProjectNLJMergeRule;
 import com.dremio.exec.planner.physical.ProjectPrule;
-import com.dremio.exec.planner.physical.PushLimitToPruneableScan;
 import com.dremio.exec.planner.physical.PushLimitToTopN;
 import com.dremio.exec.planner.physical.SamplePrule;
 import com.dremio.exec.planner.physical.SampleToLimitPrule;
@@ -181,6 +183,15 @@ public enum PlannerPhase {
     }
   },
 
+  // fake for reporting purposes.
+  TRANSITIVE_PREDICATE_PULLUP("Transitive Predicate Pullup") {
+
+    @Override
+    public RuleSet getRules(OptimizerRulesContext context) {
+      throw new UnsupportedOperationException();
+    }
+  },
+
   FLATTEN_PUSHDOWN("Flatten Function Pushdown") {
     @Override
     public RuleSet getRules(OptimizerRulesContext context) {
@@ -196,15 +207,24 @@ public enum PlannerPhase {
     }
   },
 
+  PROJECT_PUSHDOWN("Project Pushdown") {
+    @Override
+    public RuleSet getRules(OptimizerRulesContext context) {
+      return RuleSets.ofList(
+        PushProjectIntoScanRule.INSTANCE
+      );
+    }
+  },
+
   PRE_LOGICAL("Pre-Logical Filter Pushdown") {
     @Override
     public RuleSet getRules(OptimizerRulesContext context) {
       ImmutableList.Builder<RelOptRule> b = ImmutableList.builder();
+      PlannerSettings ps = context.getPlannerSettings();
       b.add(
         ConvertCountDistinctToHll.INSTANCE,
         RewriteNdvAsHll.INSTANCE,
 
-        PushProjectIntoScanRule.INSTANCE,
         PushFilterPastProjectRule.CALCITE_NO_CHILD_CHECK,
 
         JoinFilterCanonicalizationRule.INSTANCE,
@@ -213,30 +233,54 @@ public enum PlannerPhase {
         FILTER_AGGREGATE_TRANSPOSE_CALCITE_RULE,
         FILTER_MERGE_CALCITE_RULE,
 
+        DremioSortMergeRule.INSTANCE,
+
         PlannerPhase.PUSH_PROJECT_PAST_JOIN_CALCITE_RULE,
         ProjectWindowTransposeRule.INSTANCE,
         ProjectSetOpTransposeRule.INSTANCE,
         MergeProjectRule.CALCITE_INSTANCE,
-        RemoveEmptyScansRule.INSTANCE
+        RemoveEmptyScansRule.INSTANCE,
+        FilterWindowTransposeRule.INSTANCE
       );
 
-      if (context.getPlannerSettings().isRelPlanningEnabled()) {
+      if (ps.isRelPlanningEnabled()) {
         b.add(LOGICAL_FILTER_CORRELATE_RULE);
       }
 
-      if (context.getPlannerSettings().isTransitiveFilterPushdownEnabled()) {
+      if (ps.isTransitiveFilterPushdownEnabled()) {
+        // Add reduce expression rules to reduce any filters after applying transitive rule.
+        if (ps.options.getOption(PlannerSettings.REDUCE_ALGEBRAIC_EXPRESSIONS)) {
+          b.add(ReduceTrigFunctionsRule.INSTANCE);
+        }
+
         b.add(CompositeFilterJoinRule.NO_TOP_FILTER,
-          CompositeFilterJoinRule.TOP_FILTER,
-          JOIN_PUSH_EXPRESSIONS_RULE);
+          CompositeFilterJoinRule.TOP_FILTER);
+
+        if (ps.isConstantFoldingEnabled()) {
+          if (ps.isTransitiveReduceProjectExpressionsEnabled()) {
+            b.add(PROJECT_REDUCE_EXPRESSIONS_CALCITE_RULE);
+          }
+          if (ps.isTransitiveReduceFilterExpressionsEnabled()) {
+            b.add(FILTER_REDUCE_EXPRESSIONS_CALCITE_RULE);
+          }
+          if (ps.isTransitiveReduceCalcExpressionsEnabled()) {
+            b.add(CALC_REDUCE_EXPRESSIONS_CALCITE_RULE);
+          }
+        }
       } else {
-        b.add(
-        // Add support for WHERE style joins.
-        FILTER_INTO_JOIN_CALCITE_RULE,
+        b.add(FILTER_INTO_JOIN_CALCITE_RULE,
           JOIN_CONDITION_PUSH_CALCITE_RULE,
           JOIN_PUSH_EXPRESSIONS_RULE);
       }
 
       return RuleSets.ofList(b.build());
+    }
+  },
+
+  PRE_LOGICAL_TRANSITIVE("Pre-Logical Transitive Filter Pushdown") {
+    @Override
+    public RuleSet getRules(OptimizerRulesContext context) {
+      return RuleSets.ofList(PRE_LOGICAL.getRules(context));
     }
   },
 
@@ -462,11 +506,7 @@ public enum PlannerPhase {
       ExprCondition.TRUE,
       DremioRelFactories.LOGICAL_BUILDER);
 
-  public static final RelOptRule PUSH_PROJECT_PAST_JOIN_CALCITE_RULE = new ProjectJoinTransposeRule(
-      LogicalProject.class,
-      LogicalJoin.class,
-      ExprCondition.TRUE,
-      DremioRelFactories.CALCITE_LOGICAL_BUILDER);
+  public static final RelOptRule PUSH_PROJECT_PAST_JOIN_CALCITE_RULE = DremioProjectJoinTransposeRule.INSTANCE;
 
   public static final RelOptRule LOGICAL_FILTER_CORRELATE_RULE = new FilterCorrelateRule(DremioRelFactories.CALCITE_LOGICAL_BUILDER);
 
@@ -711,7 +751,6 @@ public enum PlannerPhase {
     ruleList.add(UnionAllPrule.INSTANCE);
     ruleList.add(ValuesPrule.INSTANCE);
     ruleList.add(EmptyPrule.INSTANCE);
-    ruleList.add(PushLimitToPruneableScan.INSTANCE);
     ruleList.add(ExternalQueryScanPrule.INSTANCE);
 
     if (ps.isHashAggEnabled()) {

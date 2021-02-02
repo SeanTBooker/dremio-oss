@@ -16,6 +16,8 @@
   "HeaderMenu.InternalBuild": "Internal Build",
   "HeaderMenu.FileABug": "File a Bug",
   "HeaderMenu.AccountSettings": "Account Settings",
+  "HeaderMenu.AdminSystem": "System Admin",
+  "HeaderMenu.AdminProject": "Project Admin",
   "HeaderMenu.LogOut": "Log Out",
   "Common.Name": "Name",
   "Common.Action": "Action",
@@ -31,6 +33,8 @@
   "Common.Move": "Move",
   "Common.MakeCopy": "Make a Copy",
   "Common.Location": "Location",
+  "Common.BuildInfo": "Build Information",
+  "Common.ClusterData": "Cluster Usage Data",
   "Common.Overview": "Overview",
   "Common.Next": "Next",
   "Common.Add": "Add",
@@ -260,6 +264,9 @@
   "File.Escape": "Escape",
   "File.BackQuote": "Back Quote",
   "File.Backslash": "Backslash",
+  "File.NumberOfLinesToSkip": "Number of Lines to Skip",
+  "File.ZeroNoSkip": "Zero (No Skip)",
+  "File.FirstLine": "First Line",
   "File.SkipFirstLine": "Skip First Line",
   "File.TrimFieldNames": "Trim Field Names",
   "File.Uploading": "Uploading…",
@@ -362,5 +369,6 @@
   "Message.ApiErr.Load.Reflections": "Failed to load reflection list with error: {err}",
   "Message.ApiErr.Load.Dataset": "Failed to load dataset with error: {err}",
   "Message.Show.More": "Show more",
-  "Message.Show.Less": "Show less"
+  "Message.Show.Less": "Show less",
+  "Setting.Organization.Setting": "Organization Settings"
 }

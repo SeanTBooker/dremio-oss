@@ -64,5 +64,9 @@ export default { // defaults, and defaults for unit tests
     qlik: { enabled: false }
   },
   crossSourceDisabled: false,
-  ...((window && window.dremioConfig) || {})
+  queryBundleAdminsEnabled: false,
+  queryBundleUsersEnabled: false,
+  downloadRecordsLimit: 1000000,
+  ...((window && window.dremioConfig) || {}),
+  displayTutorialsLink: false
 };

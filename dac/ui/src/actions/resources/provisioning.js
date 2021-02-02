@@ -229,3 +229,6 @@ export function openAdjustWorkersModal(entityId) {
     }));
   };
 }
+
+export const extraProvisingPageMapDispatchToProps = {};
+

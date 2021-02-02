@@ -46,7 +46,7 @@ public class SingleStreamProvider implements InputStreamProvider {
   private OperatorContext context;
 
   private MutableParquetMetadata footer;
-  final boolean readColumnOffsetIndices;
+  private boolean readColumnOffsetIndices;
 
   public SingleStreamProvider(FileSystem fs, Path path, long fileLength, long maxFooterLen, boolean readFullFile, MutableParquetMetadata footer, OperatorContext context, boolean readColumnOffsetIndices) {
     this.fs = fs;
@@ -62,6 +62,11 @@ public class SingleStreamProvider implements InputStreamProvider {
       this.allocator = null;
     }
     this.readColumnOffsetIndices = readColumnOffsetIndices;
+  }
+
+  @Override
+  public Path getStreamPath() {
+    return path;
   }
 
   @Override
@@ -93,6 +98,11 @@ public class SingleStreamProvider implements InputStreamProvider {
         throw t;
       }
     }
+  }
+
+  @Override
+  public void enableColumnIndices(List<ColumnChunkMetaData> selectedColumns) throws IOException {
+    this.readColumnOffsetIndices = true;
   }
 
   @Override

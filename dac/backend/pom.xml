@@ -22,7 +22,7 @@
   <parent>
     <groupId>com.dremio</groupId>
     <artifactId>dremio-dac-parent</artifactId>
-    <version>4.9.1-202010230218060541-2e764ed0</version>
+    <version>13.0.0-202101272034330307-20fb9275</version>
   </parent>
 
   <artifactId>dremio-dac-backend</artifactId>
@@ -133,6 +133,10 @@
     <dependency>
       <groupId>com.dremio.services</groupId>
       <artifactId>dremio-services-coordinator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.dremio.services</groupId>
+      <artifactId>dremio-services-coordinator</artifactId>
       <classifier>tests</classifier>
       <scope>test</scope>
     </dependency>
@@ -144,6 +148,7 @@
     <dependency>
       <groupId>org.apache.curator</groupId>
       <artifactId>curator-test</artifactId>
+      <version>${curator-test.version}</version>
       <scope>test</scope>
       <exclusions>
         <exclusion>
@@ -356,7 +361,6 @@
     <dependency>
       <groupId>org.immutables</groupId>
       <artifactId>value</artifactId>
-      <version>2.8.1</version>
       <scope>provided</scope>
     </dependency>
   </dependencies>
@@ -512,7 +516,7 @@
         <groupId>org.xolstice.maven.plugins</groupId>
         <artifactId>protobuf-maven-plugin</artifactId>
         <configuration>
-          <protoSourceRoot>${basedir}/src/main/rpc</protoSourceRoot>
+          <clearOutputDirectory>false</clearOutputDirectory>
         </configuration>
         <executions>
           <execution>
@@ -520,7 +524,25 @@
               <goal>compile</goal>
             </goals>
             <configuration>
+              <protoSourceRoot>${basedir}/src/main/rpc</protoSourceRoot>
               <outputDirectory>${project.build.directory}/generated-sources/protobuf</outputDirectory>
+            </configuration>
+          </execution>
+          <execution>
+            <id>generate-protobuf</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>compile</goal>
+              <goal>compile-custom</goal>
+            </goals>
+            <configuration>
+              <protoSourceRoot>${project.basedir}/src/main/protobuf</protoSourceRoot>
+              <pluginId>grpc-java</pluginId>
+              <pluginArtifact>io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}</pluginArtifact>
+              <outputDirectory>${project.build.directory}/generated-sources/protobuf</outputDirectory>
+              <excludes>
+                <exclude>**/updateid.proto</exclude>
+              </excludes>
             </configuration>
           </execution>
         </executions>

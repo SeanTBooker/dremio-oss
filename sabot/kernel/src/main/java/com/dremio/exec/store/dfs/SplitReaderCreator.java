@@ -43,7 +43,6 @@ public abstract class SplitReaderCreator implements AutoCloseable {
   protected InputStreamProvider inputStreamProvider;
   protected ParquetProtobuf.ParquetDatasetSplitScanXAttr splitXAttr;
 
-
   public SplitReaderCreator() {
   }
 
@@ -55,14 +54,14 @@ public abstract class SplitReaderCreator implements AutoCloseable {
    * Creates reader to read current parquet split
    * @return
    */
-  public abstract RecordReader createRecordReader();
+  public abstract RecordReader createRecordReader(MutableParquetMetadata footer);
 
   /**
    * Initializes InputStreamProvider to be used by split reader
    * @param lastPath
-   * @param lastFooter
+   * @param lastInputStreamProvider
    */
-  public abstract void createInputStreamProvider(Path lastPath, MutableParquetMetadata lastFooter);
+  public abstract void createInputStreamProvider(InputStreamProvider lastInputStreamProvider, MutableParquetMetadata lastFooter);
 
   /**
    * Strictly abstract - all extending classes should close all closeables including inputStreamProvider
@@ -79,6 +78,11 @@ public abstract class SplitReaderCreator implements AutoCloseable {
   public MutableParquetMetadata getFooter() {
     Preconditions.checkNotNull(inputStreamProvider);
     return handleEx(() -> inputStreamProvider.getFooter());
+  }
+
+  public InputStreamProvider getInputStreamProvider() {
+    Preconditions.checkNotNull(inputStreamProvider);
+    return inputStreamProvider;
   }
 
   /**

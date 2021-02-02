@@ -75,7 +75,7 @@ import com.dremio.service.namespace.dataset.proto.DatasetConfig;
 import com.dremio.service.namespace.source.proto.MetadataPolicy;
 import com.dremio.service.namespace.source.proto.SourceConfig;
 import com.dremio.service.namespace.source.proto.SourceInternalData;
-import com.dremio.service.scheduler.SchedulerService;
+import com.dremio.service.scheduler.ModifiableSchedulerService;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
@@ -136,7 +136,7 @@ public class ManagedStoragePlugin implements AutoCloseable {
       SabotContext context,
       Executor executor,
       boolean isMaster,
-      SchedulerService scheduler,
+      ModifiableSchedulerService modifiableScheduler,
       NamespaceService systemUserNamespaceService,
       LegacyKVStore<NamespaceKey, SourceInternalData> sourceDataStore,
       SourceConfig sourceConfig,
@@ -166,7 +166,7 @@ public class ManagedStoragePlugin implements AutoCloseable {
     // leaks this so do last.
     this.metadataManager = new SourceMetadataManager(
         sourceKey,
-        scheduler,
+        modifiableScheduler,
         isMaster,
         sourceDataStore,
         new MetadataBridge(),
@@ -639,11 +639,12 @@ public class ManagedStoragePlugin implements AutoCloseable {
           "Record count should already be filled in when altering dataset metadata.");
         MetadataObjectsUtils.overrideExtended(datasetConfig, newDatasetMetadata, Optional.empty(),
                 newDatasetMetadata.getDatasetStats().getRecordCount(), getMaxMetadataColumns());
-        systemUserNamespaceService.addOrUpdateDataset(key, datasetConfig);
-        refreshDataset(key, getDefaultRetrievalOptions());
+        //systemUserNamespaceService.addOrUpdateDataset(key, datasetConfig);
+        // Force a full refresh
+        saveDatasetAndMetadataInNamespace(datasetConfig, handle.get(), retrievalOptions.toBuilder().setForceUpdate(true).build());
         changed = true;
       }
-    } catch (ConnectorException | NamespaceException e) {
+    } catch (ConnectorException e) {
       throw UserException.validationError(e)
                          .buildSilently();
     }
@@ -735,7 +736,8 @@ public class ManagedStoragePlugin implements AutoCloseable {
   private static boolean isComplete(DatasetConfig config) {
     return config != null
         && DatasetHelper.getSchemaBytes(config) != null
-        && config.getReadDefinition() != null;
+        && config.getReadDefinition() != null
+        && config.getReadDefinition().getSplitVersion() != null;
   }
 
   public static enum MetadataAccessType {
@@ -778,6 +780,24 @@ public class ManagedStoragePlugin implements AutoCloseable {
       throw UserException.validationError(e).message("Storage plugin was changing during refresh attempt.").build(logger);
     } catch (ConnectorException | NamespaceException e) {
       throw UserException.validationError(e).message("Unable to refresh dataset.").build(logger);
+    }
+  }
+
+  public void saveDatasetAndMetadataInNamespace(DatasetConfig datasetConfig,
+                                                DatasetHandle datasetHandle,
+                                                DatasetRetrievalOptions retrievalOptions
+  ) {
+    try (AutoCloseableLock l = readLock()) {
+      checkState();
+      metadataManager.saveDatasetAndMetadataInNamespace(datasetConfig, datasetHandle, retrievalOptions);
+    } catch (StoragePluginChanging e) {
+      throw UserException.validationError(e)
+        .message("Storage plugin was changing during dataset update attempt.")
+        .build(logger);
+    } catch (ConnectorException e) {
+      throw UserException.validationError(e)
+        .message("Unable to update dataset.")
+        .build(logger);
     }
   }
 

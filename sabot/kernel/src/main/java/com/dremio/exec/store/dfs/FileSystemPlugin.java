@@ -51,6 +51,7 @@ import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.parquet.Preconditions;
 
 import com.dremio.common.config.LogicalPlanPersistence;
+import com.dremio.common.exceptions.InvalidMetadataErrorContext;
 import com.dremio.common.exceptions.UserException;
 import com.dremio.common.logical.FormatPluginConfig;
 import com.dremio.common.utils.PathUtils;
@@ -90,6 +91,7 @@ import com.dremio.exec.physical.base.Writer;
 import com.dremio.exec.physical.base.WriterOptions;
 import com.dremio.exec.planner.logical.CreateTableEntry;
 import com.dremio.exec.planner.logical.ViewTable;
+import com.dremio.exec.planner.sql.CalciteArrowHelper;
 import com.dremio.exec.record.BatchSchema;
 import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.store.ClassPathFileSystem;
@@ -259,6 +261,12 @@ public class FileSystemPlugin<C extends FileSystemConf<C, ?>> implements Storage
 
   public boolean supportsColocatedReads() {
     return true;
+  }
+
+  @Override
+  public BatchSchema mergeSchemas(DatasetConfig oldConfig, BatchSchema newSchema) {
+    boolean mixedTypesDisabled = context.getOptionManager().getOption(ExecConstants.MIXED_TYPES_DISABLED);
+    return CalciteArrowHelper.fromDataset(oldConfig).merge(newSchema, mixedTypesDisabled);
   }
 
   @Override
@@ -694,6 +702,11 @@ public class FileSystemPlugin<C extends FileSystemConf<C, ?>> implements Storage
               return false;
             }
           }
+        } catch (FileNotFoundException fnfe) {
+          throw UserException.invalidMetadataError(fnfe)
+            .addContext(fnfe.getMessage())
+            .setAdditionalExceptionContext(new InvalidMetadataErrorContext(ImmutableList.of(key.getPathComponents())))
+            .buildSilently();
         } catch (IOException ioe) {
           throw new RuntimeException("Failed to check access permission", ioe);
         }

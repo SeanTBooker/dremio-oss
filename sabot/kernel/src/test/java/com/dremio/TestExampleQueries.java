@@ -64,6 +64,10 @@ public class TestExampleQueries extends PlanTestBase {
     testNoResult("ALTER SESSION RESET ALL");
   }
 
+  @Test
+  public void testNullInInClause() throws Exception {
+    test("select * from cp.\"tpch/lineitem.parquet\" where l_orderkey in (-1, null)");
+  }
 
   @Test
   public void nullBinaryLiteral() throws Exception {
@@ -216,25 +220,6 @@ public class TestExampleQueries extends PlanTestBase {
       "   and nodes.fabric_port = threads.fabric_port  \n" +
       "   and nodes.hostname = memory.hostname \n" +
       "   and nodes.fabric_port = memory.fabric_port");
-  }
-
-  @Test
-  public void dx_7794() throws Exception {
-    String query = String.format("select * from dfs.\"%s/json/dx_7794\"", TEST_RES_PATH);
-    try {
-      test(query);
-    } catch (Exception e) {
-
-    }
-    testBuilder()
-      .sqlQuery(query)
-      .unOrdered()
-      .baselineColumns("a")
-      .baselineValues(1L)
-      .baselineValues(listOf(1L, 2.0, 3L))
-      .baselineValues(1L)
-      .baselineValues(listOf("a", "b", 3L))
-      .go();
   }
 
   @Test

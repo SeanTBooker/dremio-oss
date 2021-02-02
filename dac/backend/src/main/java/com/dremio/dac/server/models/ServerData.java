@@ -40,6 +40,8 @@ public class ServerData {
   private final String edition;
   private final AnalyzeTools analyzeTools;
   private final boolean crossSourceDisabled;
+  private final boolean queryBundleUsersEnabled;
+  private final long downloadRecordsLimit;
 
   protected ServerData(Builder builder) {
     this.serverEnvironment = builder.serverEnvironment;
@@ -60,6 +62,8 @@ public class ServerData {
     this.edition = builder.edition;
     this.analyzeTools = builder.analyzeTools;
     this.crossSourceDisabled = builder.crossSourceDisabled;
+    this.queryBundleUsersEnabled = builder.queryBundleUsersEnabled;
+    this.downloadRecordsLimit = builder.downloadRecordsLimit;
   }
 
   public String getServerEnvironment() {
@@ -130,6 +134,10 @@ public class ServerData {
     return analyzeTools;
   }
 
+  public boolean getQueryBundleUsersEnabled() {
+    return queryBundleUsersEnabled;
+  }
+
   public static Builder newBuilder() {
     return new Builder();
   }
@@ -140,6 +148,10 @@ public class ServerData {
 
   public boolean isCrossSourceDisabled() {
     return crossSourceDisabled;
+  }
+
+  public long getDownloadRecordsLimit() {
+    return downloadRecordsLimit;
   }
 
   /**
@@ -164,6 +176,8 @@ public class ServerData {
     private String edition;
     private AnalyzeTools analyzeTools;
     private boolean crossSourceDisabled;
+    private boolean queryBundleUsersEnabled;
+    private long downloadRecordsLimit;
 
     protected Builder() {
     }
@@ -187,6 +201,8 @@ public class ServerData {
       this.edition = builder.edition;
       this.analyzeTools = builder.analyzeTools;
       this.crossSourceDisabled = builder.crossSourceDisabled;
+      this.queryBundleUsersEnabled = builder.queryBundleUsersEnabled;
+      this.downloadRecordsLimit = builder.downloadRecordsLimit;
     }
 
     public Builder setServerEnvironment(String serverEnvironment) {
@@ -276,6 +292,16 @@ public class ServerData {
 
     public Builder setCrossSourceDisabled(boolean crossSourceDisabled) {
       this.crossSourceDisabled = crossSourceDisabled;
+      return this;
+    }
+
+    public Builder setQueryBundleUsersEnabled(boolean queryBundleUsersEnabled) {
+      this.queryBundleUsersEnabled = queryBundleUsersEnabled;
+      return this;
+    }
+
+    public Builder setDownloadRecordsLimit(final long downloadRecordsLimit) {
+      this.downloadRecordsLimit = downloadRecordsLimit;
       return this;
     }
 

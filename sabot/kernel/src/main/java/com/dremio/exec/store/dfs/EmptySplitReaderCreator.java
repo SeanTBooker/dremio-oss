@@ -37,7 +37,7 @@ public class EmptySplitReaderCreator extends SplitReaderCreator {
   }
 
   @Override
-  public void createInputStreamProvider(Path lastPath, MutableParquetMetadata lastFooter) {
+  public void createInputStreamProvider(InputStreamProvider lastInputStreamProvider, MutableParquetMetadata lastFooter) {
     Preconditions.checkNotNull(inputStreamProvider, "InputStreamProvider is not initialized");
   }
 
@@ -51,7 +51,7 @@ public class EmptySplitReaderCreator extends SplitReaderCreator {
   }
 
   @Override
-  public RecordReader createRecordReader() {
+  public RecordReader createRecordReader(MutableParquetMetadata footer) {
     return new EmptyRecordReader();
   }
 

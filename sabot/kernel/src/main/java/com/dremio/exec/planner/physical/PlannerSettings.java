@@ -92,6 +92,7 @@ public class PlannerSettings implements Context{
   public static final LongValidator BROADCAST_CELL_COUNT_THRESHOLD = new PositiveLongValidator("planner.broadcast_cellcount_threshold", MAX_BROADCAST_THRESHOLD, DEFAULT_CELL_COUNT_THRESHOLD);
   public static final DoubleValidator BROADCAST_FACTOR = new RangeDoubleValidator("planner.broadcast_factor", 0, Double.MAX_VALUE, 2.0d);
   public static final DoubleValidator NESTEDLOOPJOIN_FACTOR = new RangeDoubleValidator("planner.nestedloopjoin_factor", 0, Double.MAX_VALUE, 100.0d);
+  public static final LongValidator NESTEDLOOPJOIN_MAX_CONDITION_NODES = new PositiveLongValidator("planner.nestedloopjoin_max_condition_nodes", Long.MAX_VALUE, 120);
   public static final BooleanValidator NLJOIN_FOR_SCALAR = new BooleanValidator("planner.enable_nljoin_for_scalar_only", false);
   public static final DoubleValidator JOIN_ROW_COUNT_ESTIMATE_FACTOR = new RangeDoubleValidator("planner.join.row_count_estimate_factor", 0, Double.MAX_VALUE, 1.0d);
   public static final BooleanValidator MUX_EXCHANGE = new BooleanValidator("planner.enable_mux_exchange", true);
@@ -107,7 +108,9 @@ public class PlannerSettings implements Context{
   public static final LongValidator STREAM_AGG_MAX_GROUP = new PositiveLongValidator("planner.streamagg.max_group_key", Long.MAX_VALUE, 64);
   public static final BooleanValidator STREAM_AGG_WITH_GROUPS = new BooleanValidator("planner.streamagg.allow_grouping", false);
   public static final String ENABLE_DECIMAL_DATA_TYPE_KEY = "planner.enable_decimal_data_type";
+  public static final LongValidator HEP_PLANNER_MATCH_LIMIT = new PositiveLongValidator("planner.hep_match_limit", Integer.MAX_VALUE, Integer.MAX_VALUE);
   public static final BooleanValidator TRANSITIVE_FILTER_JOIN_PUSHDOWN = new BooleanValidator("planner.filter.transitive_pushdown", true);
+  public static final BooleanValidator TRANSITIVE_FILTER_NOT_NULL_EXPR_PUSHDOWN = new BooleanValidator("planner.filter.transitive_pushdown_not_null_expr", false); // Until DX-26452 is fixes
   public static final BooleanValidator ENABLE_RUNTIME_FILTER = new BooleanValidator("planner.filter.runtime_filter", true);
   public static final BooleanValidator ENABLE_TRANSPOSE_PROJECT_FILTER_LOGICAL = new BooleanValidator("planner.experimental.tpf_logical", false);
   public static final BooleanValidator ENABLE_PROJECT_CLEANUP_LOGICAL = new BooleanValidator("planner.experimental.pclean_logical", false);
@@ -120,6 +123,8 @@ public class PlannerSettings implements Context{
   public static final BooleanValidator UNIONALL_DISTRIBUTE = new BooleanValidator(UNIONALL_DISTRIBUTE_KEY, true);
   public static final LongValidator PLANNING_MAX_MILLIS = new LongValidator("planner.timeout_per_phase_ms", 60_000);
   public static final BooleanValidator RELATIONAL_PLANNING = new BooleanValidator("planner.enable_relational_planning", true);
+  public static final BooleanValidator FULL_NESTED_SCHEMA_SUPPORT = new BooleanValidator("planner.enable_full_nested_schema", true);
+  public static final BooleanValidator COMPLEX_TYPE_FILTER_PUSHDOWN = new BooleanValidator("planner.complex_type_filter_pushdown", true);
 
   public static final BooleanValidator ENABLE_LEAF_LIMITS = new BooleanValidator("planner.leaf_limit_enable", false);
   public static final RangeLongValidator LEAF_LIMIT_SIZE  = new RangeLongValidator("planner.leaf_limit_size", 1, Long.MAX_VALUE, 10000);
@@ -127,6 +132,10 @@ public class PlannerSettings implements Context{
 
   public static final BooleanValidator ENABLE_OUTPUT_LIMITS = new BooleanValidator("planner.output_limit_enable", false);
   public static final RangeLongValidator OUTPUT_LIMIT_SIZE  = new RangeLongValidator("planner.output_limit_size", 1, Long.MAX_VALUE, 1_000_000);
+
+  // number of records (per minor fragment) is truncated to at-least MIN_RECORDS_PER_FRAGMENT
+  // if num of records for the fragment is greater than this.
+  public static final Long MIN_RECORDS_PER_FRAGMENT  = 500L;
 
   public static final BooleanValidator VDS_AUTO_FIX = new BooleanValidator("validator.enable_vds_autofix", true);
 
@@ -145,7 +154,14 @@ public class PlannerSettings implements Context{
   public static final BooleanValidator ENABLE_VECTORIZED_PARQUET_DECIMAL = new BooleanValidator
     (ENABLE_VECTORIZED_PARQUET_DECIMAL_KEY, true);
 
+  public static final BooleanValidator ENABLE_PARQUET_IN_EXPRESSION_PUSH_DOWN =
+          new BooleanValidator("planner.parquet.in_expression_push_down", true);
+  public static final BooleanValidator ENABLE_PARQUET_MULTI_COLUMN_FILTER_PUSH_DOWN =
+          new BooleanValidator("planner.parquet.multi_column_filter_push_down", true);
+
   public static final LongValidator MAX_NODES_PER_PLAN = new LongValidator("planner.max_nodes_per_plan", 25_000);
+
+  public static final BooleanValidator ENABLE_ICEBERG_EXECUTION = new BooleanValidator("dremio.execution.v2", false);
   /**
    * Policy regarding storing query results
    */
@@ -176,6 +192,12 @@ public class PlannerSettings implements Context{
   public static final BooleanValidator ENABLE_REDUCE_PROJECT = new BooleanValidator("planner.enable_reduce_project", true);
   public static final BooleanValidator ENABLE_REDUCE_FILTER = new BooleanValidator("planner.enable_reduce_filter", true);
   public static final BooleanValidator ENABLE_REDUCE_CALC = new BooleanValidator("planner.enable_reduce_calc", true);
+
+  // Filter reduce expression rules used in conjunction with transitive filter
+  public static final BooleanValidator ENABLE_TRANSITIVE_REDUCE_PROJECT = new BooleanValidator("planner.enable_transitive_reduce_project", false);
+  public static final BooleanValidator ENABLE_TRANSITIVE_REDUCE_FILTER = new BooleanValidator("planner.enable_transitive_reduce_filter", false);
+  public static final BooleanValidator ENABLE_TRANSITIVE_REDUCE_CALC = new BooleanValidator("planner.enable_transitive_reduce_calc", false);
+
   public static final BooleanValidator ENABLE_TRIVIAL_SINGULAR = new BooleanValidator("planner.enable_trivial_singular", true);
 
   public static final BooleanValidator ENABLE_SORT_ROUND_ROBIN = new BooleanValidator("planner.enable_sort_round_robin", true);
@@ -311,6 +333,10 @@ public class PlannerSettings implements Context{
     return options.getOption(MAX_NODES_PER_PLAN);
   }
 
+  public final long getMaxNLJConditionNodesPerPlan() {
+    return options.getOption(NESTEDLOOPJOIN_MAX_CONDITION_NODES);
+  }
+
   public long getLeafLimit(){
     return options.getOption(LEAF_LIMIT_SIZE);
   }
@@ -345,6 +371,14 @@ public class PlannerSettings implements Context{
 
   public boolean isTransitiveFilterPushdownEnabled() {
     return options.getOption(TRANSITIVE_FILTER_JOIN_PUSHDOWN);
+  }
+
+  public boolean isTransitiveFilterNotNullExprPushdownEnabled() {
+    return options.getOption(TRANSITIVE_FILTER_NOT_NULL_EXPR_PUSHDOWN);
+  }
+
+  public boolean isComplexTypeFilterPushdownEnabled() {
+    return options.getOption(COMPLEX_TYPE_FILTER_PUSHDOWN) && options.getOption(ExecConstants.ENABLE_PARQUET_VECTORIZED_COMPLEX_READERS);
   }
 
   public boolean isRuntimeFilterEnabled() {
@@ -423,6 +457,18 @@ public class PlannerSettings implements Context{
 
   public boolean isReduceCalcExpressionsEnabled() {
     return options.getOption(ENABLE_REDUCE_CALC.getOptionName()).getBoolVal();
+  }
+
+  public boolean isTransitiveReduceProjectExpressionsEnabled() {
+    return options.getOption(ENABLE_TRANSITIVE_REDUCE_PROJECT.getOptionName()).getBoolVal();
+  }
+
+  public boolean isTransitiveReduceFilterExpressionsEnabled() {
+    return options.getOption(ENABLE_TRANSITIVE_REDUCE_FILTER.getOptionName()).getBoolVal();
+  }
+
+  public boolean isTransitiveReduceCalcExpressionsEnabled() {
+    return options.getOption(ENABLE_TRANSITIVE_REDUCE_CALC.getOptionName()).getBoolVal();
   }
 
   public boolean isGlobalDictionariesEnabled() {
@@ -568,6 +614,10 @@ public class PlannerSettings implements Context{
 
   public int getDatasetMaxSplitLimit() {
     return (int) options.getOption(DATASET_MAX_SPLIT_LIMIT);
+  }
+
+  public boolean isFullNestedSchemaSupport() {
+    return options.getOption(FULL_NESTED_SCHEMA_SUPPORT);
   }
 
   public void pullDistributionTrait(boolean pullDistributionTrait) {

@@ -139,7 +139,7 @@ public class ReflectionManager implements Runnable {
   private final Set<ReflectionId> reflectionsToUpdate;
   private final WakeUpCallback wakeUpCallback;
   private final Supplier<ExpansionHelper> expansionHelper;
-  private final Path accelerationBasePath;
+  private volatile Path accelerationBasePath;
   private final BufferAllocator allocator;
   private final ReflectionGoalChecker reflectionGoalChecker;
   private RefreshStartHandler refreshStartHandler;
@@ -672,6 +672,20 @@ public class ReflectionManager implements Runnable {
     // when the materialization entry is deleted
   }
 
+  void setAccelerationBasePath(Path path) {
+    if (path.equals(accelerationBasePath)) {
+      return;
+    }
+    Iterable<ReflectionEntry> entries = reflectionStore.find();
+    // if there are already reflections don't update the path if the input and current path is different.
+    if (Iterables.size(entries) > 0) {
+      logger.warn("Failed to set acceleration base path as there are reflections present. Input path {} existing path {}",
+        path, accelerationBasePath);
+      return;
+    }
+    this.accelerationBasePath = path;
+  }
+
   @VisibleForTesting
   void handleSuccessfulJob(ReflectionEntry entry, Materialization materialization, com.dremio.service.job.JobDetails job) {
     switch (entry.getState()) {
@@ -830,8 +844,10 @@ public class ReflectionManager implements Runnable {
     final List<DataPartition> dataPartitions = computeDataPartitions(jobInfo);
     final MaterializationMetrics metrics = ReflectionUtils.computeMetrics(job, jobsService, allocator, JobsProtoUtil.toStuff(job.getJobId()));
     final List<String> refreshPath = ReflectionUtils.getRefreshPath(JobsProtoUtil.toStuff(job.getJobId()), accelerationBasePath, jobsService, allocator);
+    final boolean isIcebergRefresh = materialization.getIsIcebergDataset() != null && materialization.getIsIcebergDataset();
+    final String icebergBasePath = ReflectionUtils.getIcebergReflectionBasePath(materialization, refreshPath, isIcebergRefresh);
     final Refresh refresh = ReflectionUtils.createRefresh(materialization.getReflectionId(), refreshPath, seriesId,
-      0, new UpdateId(), jobDetails, metrics, dataPartitions);
+      0, new UpdateId(), jobDetails, metrics, dataPartitions, isIcebergRefresh, icebergBasePath);
     refresh.setCompacted(true);
 
     // no need to update entry lastSuccessfulRefresh, as it may only cause unnecessary refreshes on dependant reflections
@@ -915,7 +931,7 @@ public class ReflectionManager implements Runnable {
     }
 
     try {
-      final JobId refreshJobId = refreshStartHandler.startJob(entry, jobSubmissionTime);
+      final JobId refreshJobId = refreshStartHandler.startJob(entry, jobSubmissionTime, optionManager);
 
       entry.setState(REFRESHING)
         .setRefreshJobId(refreshJobId);

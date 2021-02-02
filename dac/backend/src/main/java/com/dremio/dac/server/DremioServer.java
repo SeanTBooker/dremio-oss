@@ -100,6 +100,10 @@ public class DremioServer {
       // security header filters
       servletContextHandler.addFilter(SecurityHeadersFilter.class.getName(), "/*", EnumSet.of(DispatcherType.REQUEST));
 
+      // Generic Response Headers filter for api responses
+      servletContextHandler.addFilter(GenericResponseHeadersFilter.class.getName(), "/apiv2/*", EnumSet.of(DispatcherType.REQUEST));
+      servletContextHandler.addFilter(GenericResponseHeadersFilter.class.getName(), "/api/*", EnumSet.of(DispatcherType.REQUEST));
+
       // server tracing filter.
       servletContextHandler.addFilter(SpanFinishingFilter.class.getName(), "/*", EnumSet.of(DispatcherType.REQUEST));
 
@@ -203,7 +207,7 @@ public class DremioServer {
     // gzip handler.
     final GzipHandler gzipHandler = new GzipHandler();
     // gzip handler interferes with ChunkedOutput, so exclude the job download path
-    gzipHandler.addExcludedPaths("/apiv2/job/*");
+    gzipHandler.addExcludedPaths("/apiv2/job/*", "/api/v3/support-bundle/*");
     rootHandler.setHandler(gzipHandler);
 
     // servlet handler for everything (to manage path mapping)

@@ -16,25 +16,18 @@
 import PropTypes from 'prop-types';
 import Immutable from 'immutable';
 
-import { CLUSTER_STATE } from '@app/constants/provisioningPage/provisioningConstants';
 import { EngineStatusIcon } from '@app/pages/AdminPage/subpages/Provisioning/components/EngineStatus';
 import { getEngineStatusCounts } from 'dyn-load/pages/AdminPage/subpages/Provisioning/provisioningUtils';
-
+import { getItems } from '@inject/pages/AdminPage/subpages/Provisioning/components/singleEngine/EngineStatusBarMixin';
 export function EngineStatusBar(props) {
   const { engine } = props;
 
   if (!engine) return null;
 
   const statusCounts = getEngineStatusCounts(engine);
-  const items = [
-    {status: CLUSTER_STATE.running, label: la('Online'), count: statusCounts.active},
-    {status: CLUSTER_STATE.starting, label: la('Starting'), count: statusCounts.pending},
-    {status: CLUSTER_STATE.provisioning, label: la('Provisioning'), count: statusCounts.disconnected},
-    {status: CLUSTER_STATE.stopping, label: la('Stopping'), count: statusCounts.decommissioning}
-  ];
 
   return (<div style={styles.statusBar}>
-    {items.map(item => <div key={item.status} style={styles.statusItem}>
+    {getItems(statusCounts).map(item => <div key={item.status} style={styles.statusItem}>
       <EngineStatusIcon status={item.status} style={styles.statusIcon}/>{item.label}: {item.count}
     </div>)}
   </div>);

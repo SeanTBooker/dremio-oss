@@ -101,6 +101,9 @@ public class AttemptManager implements Runnable {
   private static final Counter FAILED_1D = Metrics.newCounter(Metrics.join("jobs", "failed_1d"), ResetType.PERIODIC_1D);
 
   @VisibleForTesting
+  public static final String INJECTOR_CONSTRUCTOR_ERROR = "constructor-error";
+
+  @VisibleForTesting
   public static final String INJECTOR_TRY_BEGINNING_ERROR = "run-try-beginning";
 
   @VisibleForTesting
@@ -120,6 +123,9 @@ public class AttemptManager implements Runnable {
 
   @VisibleForTesting
   public static final String INJECTOR_TAIL_PROFLE_ERROR = "tail-profile-error";
+
+  @VisibleForTesting
+  public static final String INJECTOR_GET_FULL_PROFLE_ERROR = "get-full-profile-error";
 
   @VisibleForTesting
   public static final String INJECTOR_METADATA_RETRIEVAL_PAUSE = "metadata-retrieval-pause";
@@ -197,6 +203,7 @@ public class AttemptManager implements Runnable {
     RUN_15M.increment();
     RUN_1D.increment();
     recordNewState(QueryState.ENQUEUED);
+    injector.injectUnchecked(queryContext.getExecutionControls(), INJECTOR_CONSTRUCTOR_ERROR);
   }
 
   private class CompletionListenerImpl implements CompletionListener {
@@ -641,12 +648,15 @@ public class AttemptManager implements Runnable {
         recordNewState(QueryState.FAILED);
         resultState = QueryState.FAILED;
         if (uex == null) {
-          uex = UserException.systemError(resultException).addIdentity(queryContext.getCurrentEndpoint()).build(logger);
+          uex = UserException.systemError(resultException)
+            .addContext("Query failed due to kvstore or network errors. Details and profile information for this job may be partial or missing.")
+            .addIdentity(queryContext.getCurrentEndpoint()).build(logger);
         }
       }
 
       UserBitShared.QueryProfile queryProfile = null;
       try {
+        injector.injectUnchecked(queryContext.getExecutionControls(), INJECTOR_GET_FULL_PROFLE_ERROR);
         queryProfile = profileTracker.getFullProfile();
       } catch (Exception e) {
         logger.warn("Exception while getting full profile. Setting query state to failed", e);
@@ -654,7 +664,9 @@ public class AttemptManager implements Runnable {
         recordNewState(QueryState.FAILED);
         resultState = QueryState.FAILED;
         if (uex == null) {
-          uex = UserException.systemError(resultException).addIdentity(queryContext.getCurrentEndpoint()).build(logger);
+          uex = UserException.systemError(resultException)
+            .addContext("Query failed due to kvstore or network errors. Details and profile information for this job may be partial or missing.")
+            .addIdentity(queryContext.getCurrentEndpoint()).build(logger);
         }
         // As full profile cannot be retrieved and as we are marking the query as failed, let us get the planning profile
         // to use in query result.

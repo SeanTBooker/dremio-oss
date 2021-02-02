@@ -388,6 +388,15 @@ public class ReflectionServiceImpl extends BaseReflectionService {
     wakeupHandler = new WakeupHandler(executorService, reflectionManager);
   }
 
+  @Override
+  public void updateAccelerationBasePath() {
+    if (reflectionManager != null) {
+      final FileSystemPlugin accelerationPlugin = sabotContext.get().getCatalogService()
+        .getSource(ReflectionServiceImpl.ACCELERATOR_STORAGEPLUGIN_NAME);
+      reflectionManager.setAccelerationBasePath(accelerationPlugin.getConfig().getPath());
+    }
+  }
+
   public RefreshHelper getRefreshHelper() {
     return new RefreshHelper() {
 
@@ -419,7 +428,7 @@ public class ReflectionServiceImpl extends BaseReflectionService {
   }
 
   @VisibleForTesting
-  void refreshCache() {
+  public void refreshCache() {
     if (isCacheEnabled()) {
       logger.debug("materialization cache refresh...");
       materializationCache.refresh();
@@ -510,9 +519,9 @@ public class ReflectionServiceImpl extends BaseReflectionService {
         .setId(id.getId())
         .setName(name)
         .setQueryDatasetId(datasetConfig.getId().getId())
-        .setQueryDatasetHash(computeDatasetHash(datasetConfig, namespaceService.get(), false))
+        .setQueryDatasetHash(computeDatasetHash(datasetConfig, namespaceService.get(), true))
         .setTargetDatasetId(targetDatasetConfig.getId().getId())
-        .setTargetDatasetHash(computeDatasetHash(targetDatasetConfig, namespaceService.get(), false));
+        .setTargetDatasetHash(computeDatasetHash(targetDatasetConfig, namespaceService.get(), true));
 
       // check that we are able to get a MaterializationDescriptor before storing it
       MaterializationDescriptor descriptor = ReflectionUtils.getMaterializationDescriptor(externalReflection, namespaceService.get());
@@ -1099,6 +1108,10 @@ public class ReflectionServiceImpl extends BaseReflectionService {
       wakeupManager("failed to expand materialization"); // we should wake up the manager to update the reflection
       return null;
     }
+  }
+
+  public void resetCache() {
+    materializationCache.resetCache();
   }
 
   public ReflectionManager getReflectionManager() {

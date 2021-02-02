@@ -40,8 +40,6 @@ import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.SetOp;
 import org.apache.calcite.rel.core.Window;
 import org.apache.calcite.rel.core.Window.RexWinAggCall;
-import org.apache.calcite.rel.logical.LogicalAggregate;
-import org.apache.calcite.rel.logical.LogicalValues;
 import org.apache.calcite.rel.logical.LogicalWindow;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.rules.MultiJoin;
@@ -74,6 +72,7 @@ import org.apache.calcite.util.mapping.MappingType;
 import org.apache.calcite.util.mapping.Mappings;
 
 import com.dremio.common.expression.SchemaPath;
+import com.dremio.exec.calcite.logical.SampleCrel;
 import com.dremio.exec.calcite.logical.ScanCrel;
 import com.dremio.exec.planner.logical.DremioRelFactories;
 import com.dremio.exec.planner.logical.FlattenVisitors;
@@ -148,18 +147,12 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
     Aggregate aggregate,
     ImmutableBitSet fieldsUsed,
     Set<RelDataTypeField> extraFields) {
-    TrimResult result = super.trimFields(aggregate, fieldsUsed, extraFields);
-    if (result.left instanceof LogicalAggregate) {
-      LogicalAggregate logicalAggregate = (LogicalAggregate) result.left;
-      if (((aggregate.getGroupCount() == 0 && aggregate.getAggCallList().size() != 0) || (aggregate.getGroupCount() != 0 && aggregate.getAggCallList().size() == 0)) &&
-        (logicalAggregate.getGroupCount() == 0 && logicalAggregate.getAggCallList().size() == 0)) {
-        // If a logical aggregate has no groups and no agg function after trimming, we have trimmed all the columns
-        // and the operator above does not need any column from us. Return a single dummy row.
-        Mapping newMapping = Mappings.create(MappingType.INVERSE_SURJECTION, result.right.getSourceCount(), 1);
-        result = new TrimResult(LogicalValues.createOneRow(logicalAggregate.getCluster()), newMapping);
-      }
+    int fieldCount = aggregate.getRowType().getFieldCount();
+    if (fieldCount == 0) {
+      // If the input has no fields, we cannot trim anything.
+      return new TrimResult(aggregate, Mappings.createIdentity(fieldCount));
     }
-    return result;
+    return super.trimFields(aggregate, fieldsUsed, extraFields);
   }
 
   /**
@@ -279,6 +272,17 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
   }
 
   /**
+   * Variant of {@link #trimFields(RelNode, ImmutableBitSet, Set)} for {@link SampleCrel}.
+   */
+  public TrimResult trimFields(
+    SampleCrel sampleCrel,
+    ImmutableBitSet fieldsUsed,
+    Set<RelDataTypeField> extraFields) {
+    TrimResult result = dispatchTrimFields(sampleCrel.getInput(), fieldsUsed, extraFields);
+    return result(SampleCrel.create(result.left), result.right);
+  }
+
+  /**
    * Variant of {@link #trimFields(RelNode, ImmutableBitSet, Set)} for {@link ScanCrel}.
    */
   @SuppressWarnings("unused")
@@ -376,7 +380,7 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
       index++;
     }
 
-    FilesystemScanDrel newDrel = drel.cloneWithProject(paths);
+    FilesystemScanDrel newDrel = drel.cloneWithProject(paths, false);
     return result(newDrel, m);
   }
 
@@ -387,7 +391,7 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
       ImmutableBitSet fieldsUsed,
       Set<RelDataTypeField> extraFields) {
     if(!setOp.all) {
-      return result(setOp, Mappings.createIdentity(setOp.getRowType().getFieldCount()));
+      return super.trimFields(setOp, ImmutableBitSet.range(setOp.getRowType().getFieldCount()), extraFields);
     }
     return super.trimFields(setOp, fieldsUsed, extraFields);
   }
@@ -668,6 +672,9 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
     JoinRel join,
     ImmutableBitSet fieldsUsed,
     Set<RelDataTypeField> extraFields) {
+    if (fieldsUsed.cardinality() == 0) {
+      fieldsUsed = fieldsUsed.set(0);
+    }
     TrimResult result = super.trimFields(join, fieldsUsed, extraFields);
     Join rel = (Join) result.left;
     Mapping mapping = result.right;

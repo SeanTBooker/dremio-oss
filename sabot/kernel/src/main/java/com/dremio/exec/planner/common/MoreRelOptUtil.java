@@ -15,10 +15,12 @@
  */
 package com.dremio.exec.planner.common;
 
+import java.math.BigDecimal;
 import java.util.AbstractList;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -28,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 import org.apache.calcite.linq4j.Ord;
 import org.apache.calcite.plan.Convention;
@@ -42,10 +45,10 @@ import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.RelFactories;
 import org.apache.calcite.rel.core.Sort;
 import org.apache.calcite.rel.logical.LogicalAggregate;
+import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.metadata.RelColumnOrigin;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
-import org.apache.calcite.rel.rules.ProjectRemoveRule;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rel.type.RelDataTypeField;
@@ -62,6 +65,7 @@ import org.apache.calcite.rex.RexLocalRef;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexOver;
 import org.apache.calcite.rex.RexRangeRef;
+import org.apache.calcite.rex.RexShuttle;
 import org.apache.calcite.rex.RexSubQuery;
 import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.rex.RexVisitorImpl;
@@ -74,6 +78,7 @@ import org.apache.calcite.tools.RelBuilder;
 import org.apache.calcite.tools.RelBuilderFactory;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.Pair;
+import org.apache.calcite.util.Util;
 
 import com.dremio.common.exceptions.UserException;
 import com.dremio.common.types.TypeProtos;
@@ -130,7 +135,13 @@ public final class MoreRelOptUtil {
     return minDepth + 1;
   }
 
-
+  public static int countRelNodes(RelNode rel) {
+    int count = 1; // Current node
+    for (RelNode child : rel.getInputs()) { // Add children
+      count += countRelNodes(child);
+    }
+    return count;
+  }
 
   public static boolean areRowTypesCompatibleForInsert(
     RelDataType rowType1,
@@ -368,12 +379,18 @@ public final class MoreRelOptUtil {
     return true;
   }
 
-  public static boolean isTrivialProject(Project project, boolean useNamesInIdentityProjCalc) {
-    if (!useNamesInIdentityProjCalc) {
-      return ProjectRemoveRule.isTrivial(project);
-    }  else {
-      return containIdentity(project.getProjects(), project.getRowType(), project.getInput().getRowType());
-    }
+  public static boolean isTrivialProject(Project project) {
+    return containIdentity(project.getProjects(),
+      project.getRowType(),
+      project.getInput().getRowType(),
+      String::compareTo);
+  }
+
+  public static boolean isTrivialProjectIgnoreNameCasing(Project project) {
+    return containIdentity(project.getProjects(),
+        project.getRowType(),
+        project.getInput().getRowType(),
+        String::compareToIgnoreCase);
   }
 
   /** Returns a rowType having all unique field name.
@@ -392,7 +409,9 @@ public final class MoreRelOptUtil {
    * wholly {@link RexInputRef} objects with types and names corresponding
    * to the underlying row type. */
   public static boolean containIdentity(List<? extends RexNode> exps,
-                                        RelDataType rowType, RelDataType childRowType) {
+      RelDataType rowType,
+      RelDataType childRowType,
+      Comparator<String> nameComparator) {
     List<RelDataTypeField> fields = rowType.getFieldList();
     List<RelDataTypeField> childFields = childRowType.getFieldList();
     int fieldCount = childFields.size();
@@ -408,7 +427,7 @@ public final class MoreRelOptUtil {
       if (var.getIndex() != i) {
         return false;
       }
-      if (!fields.get(i).getName().equals(childFields.get(i).getName())) {
+      if (0 != nameComparator.compare(fields.get(i).getName(), childFields.get(i).getName())) {
         return false;
       }
       if (!fields.get(i).getType().equals(childFields.get(i).getType())) {
@@ -584,7 +603,7 @@ public final class MoreRelOptUtil {
 
     @Override
     public Boolean visitFieldAccess(RexFieldAccess fieldAccess) {
-      return false;
+      return fieldAccess.getReferenceExpr().accept(this);
     }
 
     @Override
@@ -705,7 +724,7 @@ public final class MoreRelOptUtil {
 
     @Override
     public Boolean visitFieldAccess(RexFieldAccess fieldAccess) {
-      return false;
+      return fieldAccess.getReferenceExpr().accept(this);
     }
 
     @Override
@@ -1004,6 +1023,207 @@ public final class MoreRelOptUtil {
         rexNode.accept(this);
       }
       return setBuilder.build();
+    }
+  }
+
+  /**
+   * RexShuttle which canonicalizes numeric literals in the RexNode to its expanded form.
+   */
+  public static class RexLiteralCanonicalizer extends RexShuttle {
+    private final RexBuilder rexBuilder;
+
+    public RexLiteralCanonicalizer(RexBuilder rexBuilder) {
+      this.rexBuilder = rexBuilder;
+    }
+
+    @Override
+    public RexNode visitLiteral(RexLiteral literal) {
+      RexNode newLiteral = literal(literal.getValue(), literal.getType());
+      if (newLiteral != null) {
+        return newLiteral;
+      }
+      // Should we try with value2/value3?
+      return literal;
+    }
+
+    /**
+     * Creates a literal (constant expression).
+     */
+    private RexNode literal(Object value, RelDataType type) {
+      if (value instanceof BigDecimal) {
+        return rexBuilder.makeExactLiteral(stripTrailingZeros((BigDecimal) value), type);
+      } else if (value instanceof Float || value instanceof Double) {
+        return rexBuilder.makeApproxLiteral(
+          stripTrailingZeros(BigDecimal.valueOf(((Number) value).doubleValue())), type);
+      } else if (value instanceof Number) {
+        return rexBuilder.makeExactLiteral(
+          stripTrailingZeros(BigDecimal.valueOf(((Number) value).longValue())), type);
+      } else {
+        return null;
+      }
+    }
+
+    private BigDecimal stripTrailingZeros(BigDecimal value) {
+      if (value.scale() <= 0) {
+        // Its already an integer value. No need to strip any zeroes.
+        return value;
+      }
+      try {
+        BigDecimal newValue = value.stripTrailingZeros();
+        int scale = newValue.scale();
+        if (scale >= 0 && scale <= rexBuilder.getTypeFactory().getTypeSystem().getMaxNumericScale()) {
+          return newValue;
+        } else if (scale < 0) {
+          // In case we have something like 600.00, where the scale is greater than 0,
+          // stripping trailing zeros will end up in scientific notation 6E+2. Set
+          // the scale to 0 to get the expanded notation.
+          return newValue.setScale(0, BigDecimal.ROUND_UNNECESSARY);
+        }
+      } catch (Exception ex) {
+        // In case any exception happens, log and continue without stripping.
+        logger.info(String.format("Caught exception while stripping trailing zeroes from %s", value.toPlainString()), ex);
+      }
+      return value;
+    }
+  }
+
+  /**
+   * Rewrites structured condition
+   * For example,
+   * ROW($1,$2) <> ROW(1,2)
+   * =>
+   * $1 <> 1 and $2 <> 2
+   */
+  public static class StructuredConditionRewriter extends StatelessRelShuttleImpl {
+    private StructuredConditionRewriter() {
+    }
+
+    @Override
+    public RelNode visit(LogicalProject project) {
+      RelNode newInput = project.getInput().accept(this);
+      final ConditionFlattenter flattener = new ConditionFlattenter(project.getCluster().getRexBuilder());
+      List<RexNode> newExprs = project.getChildExps().stream().map(expr -> expr.accept(flattener)).collect(Collectors.toList());
+      return LogicalProject.create(newInput, newExprs, project.getRowType().getFieldNames());
+    }
+
+    @Override
+    public RelNode visit(LogicalFilter filter) {
+      RelNode newInput = filter.getInput().accept(this);
+      final ConditionFlattenter flattener = new ConditionFlattenter(filter.getCluster().getRexBuilder());
+      return LogicalFilter.create(newInput, filter.getCondition().accept(flattener));
+    }
+
+    public static RelNode rewrite(RelNode rel) {
+      return rel.accept(new StructuredConditionRewriter());
+    }
+
+    /**
+     *
+     */
+    private static class ConditionFlattenter extends RexShuttle {
+      private RexBuilder builder;
+
+      private ConditionFlattenter(RexBuilder builder) {
+        this.builder = builder;
+      }
+
+      public RexNode visitCall(RexCall rexCall) {
+        if (rexCall.isA(SqlKind.COMPARISON)) {
+          if(rexCall.getOperands().get(0).getType().isStruct()) {
+            RexNode converted = flattenComparison(builder, rexCall.getOperator(), rexCall.getOperands());
+            if (converted != null) {
+              return converted;
+            }
+          }
+        }
+        return super.visitCall(rexCall);
+      }
+    }
+
+    private static RexNode flattenComparison(RexBuilder rexBuilder, SqlOperator op, List<RexNode> exprs) {
+      final List<Pair<RexNode, String>> flattenedExps = Lists.newArrayList();
+      for(RexNode expr : exprs) {
+        if (expr instanceof RexCall && expr.isA(SqlKind.ROW)) {
+          RexCall call = (RexCall) expr;
+          List<RexNode> operands = call.getOperands();
+          for (int i = 0 ; i < operands.size() ; i++) {
+            flattenedExps.add(new Pair<>(operands.get(i), call.getType().getFieldList().get(i).getName()));
+          }
+        } else if (expr instanceof RexCall && expr.isA(SqlKind.CAST)) {
+          RexCall call = (RexCall) expr;
+          if (!call.getOperands().get(0).isA(SqlKind.ROW)) {
+            return null;
+          }
+          List<RexNode> fields =  ((RexCall) call.getOperands().get(0)).getOperands();
+          List<RelDataTypeField> types = call.type.getFieldList();
+          for (int i = 0 ; i < fields.size() ; i++) {
+            RexNode cast = rexBuilder.makeCast(types.get(i).getType(), fields.get(i));
+            flattenedExps.add(new Pair<>(cast, types.get(i).getName()));
+          }
+        } else {
+          return null;
+        }
+      }
+
+      int n = flattenedExps.size() / 2;
+      boolean negate = false;
+      if (op.getKind() == SqlKind.NOT_EQUALS) {
+        negate = true;
+        op = SqlStdOperatorTable.EQUALS;
+      }
+
+      if (n > 1 && op.getKind() != SqlKind.EQUALS) {
+        throw Util.needToImplement("inequality comparison for row types");
+      } else {
+        RexNode conjunction = null;
+
+        for(int i = 0; i < n; ++i) {
+          RexNode comparison = rexBuilder.makeCall(op, (RexNode) flattenedExps.get(i).left, (RexNode) flattenedExps.get(i + n).left);
+          if (conjunction == null) {
+            conjunction = comparison;
+          } else {
+            conjunction = rexBuilder.makeCall(SqlStdOperatorTable.AND, conjunction, comparison);
+          }
+        }
+
+        if (negate) {
+          return rexBuilder.makeCall(SqlStdOperatorTable.NOT, conjunction);
+        } else {
+          return conjunction;
+        }
+      }
+    }
+  }
+
+  public static class RexNodeCountVisitor extends RexShuttle {
+
+    public static int count(RexNode node) {
+      RexNodeCountVisitor v = new RexNodeCountVisitor();
+      node.accept(v);
+      return v.count.value;
+    }
+
+    Pointer <Integer>count = new Pointer<Integer>(0);
+    public int getRexNodeCount() {
+      return count.value;
+    }
+
+    @Override
+    public RexNode visitCall(RexCall call) {
+      count.value++;
+      return super.visitCall(call);
+    }
+
+    @Override
+    public RexNode visitInputRef(RexInputRef input) {
+      count.value++;
+      return super.visitInputRef(input);
+    }
+
+    @Override
+    public RexNode visitLiteral(RexLiteral literal) {
+      count.value++;
+      return super.visitLiteral(literal);
     }
   }
 }

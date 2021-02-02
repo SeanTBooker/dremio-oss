@@ -22,7 +22,7 @@
   <parent>
     <groupId>com.dremio.services</groupId>
     <artifactId>dremio-services-parent</artifactId>
-    <version>4.9.1-202010230218060541-2e764ed0</version>
+    <version>13.0.0-202101272034330307-20fb9275</version>
   </parent>
   <artifactId>dremio-services-telemetry-utils</artifactId>
   <name>Services - Telemetry - Utils</name>

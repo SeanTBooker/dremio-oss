@@ -39,7 +39,7 @@ public class StreamPerColumnProvider implements InputStreamProvider {
   private final long length;
   private MutableParquetMetadata footer;
   private final long maxFooterLen;
-  final boolean readColumnOffsetIndexes;
+  private boolean readColumnOffsetIndexes;
   private final BufferAllocator allocator;
   private final OperatorContext context;
 
@@ -61,6 +61,11 @@ public class StreamPerColumnProvider implements InputStreamProvider {
   }
 
   @Override
+  public Path getStreamPath() {
+    return path;
+  }
+
+  @Override
   public BulkInputStream getStream(ColumnChunkMetaData column) throws IOException {
     FSInputStream is = fs.open(path);
     BulkInputStream stream = BulkInputStream.wrap(Streams.wrap(is));
@@ -71,6 +76,11 @@ public class StreamPerColumnProvider implements InputStreamProvider {
   @Override
   public boolean isSingleStream() {
     return false;
+  }
+
+  @Override
+  public void enableColumnIndices(List<ColumnChunkMetaData> selectedColumns) throws IOException {
+    this.readColumnOffsetIndexes = true;
   }
 
   @Override
